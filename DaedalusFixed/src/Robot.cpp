@@ -35,8 +35,7 @@
 #define DIO8 8
 #define DIO9 9
 
-#define PULSEPERIN 0
-#define PULSEPERCM 0
+#define PULSEIN 0.15
 
 class Robot : public IterativeRobot {
 public:
@@ -64,7 +63,8 @@ public:
 	DigitalInput* ropeLimit;
 	AnalogInput leftUltrasonic;
 	AnalogInput rightUltrasonic;
-	AnalogInput centerUltrasonic;
+	Ultrasonic* springUltrasonic;
+	DigitalInput* pusherSensor;
 
 	Encoder leftEncoder;
 	Encoder rightEncoder;
@@ -82,7 +82,10 @@ public:
 
 	bool ultrasonicAligning;
 	bool ultrasonicApproaching;
+	bool ultrasonicRetreating;
+	double medianDistance;
 	double minDistance;
+	double endDistance;
 	double valueToInches;
 
 	enum Gears {
@@ -95,6 +98,10 @@ public:
 		step1,
 		step2,
 		step3,
+		step4,
+		step5,
+		step6,
+		step7,
 		done
 	} autoStep;
 
@@ -114,9 +121,8 @@ public:
 		compressor(PCM0),
 		leftUltrasonic(ANALOG0),
 		rightUltrasonic(ANALOG1),
-		centerUltrasonic(ANALOG2),
-		leftEncoder(DIO6, DIO7),
-		rightEncoder(DIO8, DIO9)
+		leftEncoder(DIO5, DIO4),
+		rightEncoder(DIO7, DIO6)
 	{
 		rightJoystick = new MyJoystick();
 		leftJoystick = new MyJoystick();
@@ -134,10 +140,16 @@ public:
 		enabled = false;
 		pressureStatus = 0;
 
-		minDistance = 14;
+		medianDistance = 750;
+		minDistance = 300;
+		endDistance = 500;
 		valueToInches = 0.125;
 		ultrasonicAligning = false;
 		ultrasonicApproaching = false;
+		ultrasonicRetreating = false;
+
+		springUltrasonic = new Ultrasonic(DIO9, DIO8);
+		springUltrasonic->SetAutomaticMode(true);
 
 		leftDriveA.SetExpiration(0.1);
 		leftDriveB.SetExpiration(0.1);
@@ -149,12 +161,21 @@ public:
 		rightGear = down;
 
 		ropeLimit = new DigitalInput(DIO0);
+		pusherSensor = new DigitalInput(DIO1);
 
 		autoStep = step0;
+
+		leftEncoder.Reset();
+		rightEncoder.Reset();
+		leftEncoder.SetDistancePerPulse(PULSEIN);
+		rightEncoder.SetDistancePerPulse(-PULSEIN);
+
 	}
 
 	~Robot()
 	{
+		delete pusherSensor;
+		delete ropeLimit;
 		delete rightJoystick;
 		delete leftJoystick;
 		delete handheld;
@@ -163,6 +184,7 @@ public:
 	void RobotInit()
 	{
 		CameraServer::GetInstance()->StartAutomaticCapture("cam0", 0);
+//		CameraServer::GetInstance()->StartAutomaticCapture("cam1", 1);
 		enabled = compressor.Enabled();
 		pressureStatus = compressor.GetPressureSwitchValue();
 		current = compressor.GetCompressorCurrent();
@@ -171,41 +193,59 @@ public:
 
 	void AutonomousInit()
 	{
-
+		autoStep = step0;
 	}
 
 	void AutonomousPeriodic()
 	{
-//		if (autoStep == step0)
-//		{
-//			ResetEverything();
-//			autoStep = step1;
-//		}
-//		else if (autoStep == step1)
-//		{
-//			MoveForward(1.0, 12, PULSEPERIN);
-//		}
+		if (autoStep == step0)
+		{
+			ResetEverything();
+			autoStep = step1;
+		}
+		else if (autoStep == step1)
+		{
+			ultrasonicAligning = true;
+			AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), step2);
+		}
+		else if (autoStep == step2)
+		{
+			ultrasonicApproaching = true;
+			ApproachGear(medianDistance, step3);
+		}
+		else if (autoStep == step3)
+		{
+			GearAim(step4);
+		}
+		else if (autoStep == step4)
+		{
+			ultrasonicApproaching = true;
+			ApproachGear(minDistance, step5);
+		}
+		else if (autoStep == step5)
+		{
+			CheckSpring(step6);
+		}
+		else if (autoStep == step6)
+		{
+			ultrasonicRetreating = true;
+			Retreat(endDistance, step7);
+		}
+		else if (autoStep == step7)
+		{
+			if (pusherSensor->Get() == 0)
+			{
+				AutoPushGear(false); //RETRACT GEAR PUSHER
+				autoStep = done;
+			}
+		}
+		else if (autoStep == done)
+		{
+			ResetEverything();
+		}
 
-//		if (autoStep == step0)
-//		{
-//			ResetEverything();
-//			autoStep = step1;
-//		}
-//		else if (autoStep == step1)
-//		{
-//			AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), step2);
-//		}
-//		else if (autoStep == step2)
-//		{
-//			ApproachGear(centerUltrasonic.GetValue() * valueToInches, done);
-//		}
-//		else if (autoStep == done)
-//		{
-//			ResetEverything();
-//		}
-
-		ultrasonicAligning = true;
-		AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), done);
+//		ultrasonicAligning = true;
+//		AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), done);
 	}
 
 	void ResetEverything()
@@ -214,9 +254,10 @@ public:
 		rightEncoder.Reset();
 		//GYRO RESET CODE HERE
 	}
-	void MoveForward(double speed, double distance, double pulsemod)
+
+	void MoveForward(double speed, double distance)
 	{
-		if (leftEncoder.Get() < distance * pulsemod)
+		if (leftEncoder.Get() < distance)
 		{
 			SetMotors(speed, speed);
 		}
@@ -296,12 +337,13 @@ public:
 
 	void ApproachGear (double distance, AutoState nextStep)
 	{
+		double averageUltrasonic = (leftUltrasonic.GetValue() + rightUltrasonic.GetValue()) / 2;
 		if (ultrasonicApproaching)
 		{
 			ShiftDown();
-			if (distance > minDistance)
+			if ( averageUltrasonic > distance)
 			{
-				SetMotors(0.45, 0.45);
+				SetMotors(0.33, 0.33);
 			}
 			else
 			{
@@ -311,49 +353,55 @@ public:
 			}
 		}
 	}
-	void TeleopInit()
+
+	void Retreat (double distance, AutoState nextStep)
 	{
-		leftJoystick->init(&left);
-		rightJoystick->init(&right);
-		handheld->init(&controller);
-
-		driveSwapped = false;
+		double averageUltrasonic = (leftUltrasonic.GetValue() + rightUltrasonic.GetValue()) / 2;
+		if (ultrasonicRetreating)
+		{
+			ShiftDown();
+			if ( averageUltrasonic < distance)
+			{
+				SetMotors(-0.33, -0.33);
+			}
+			else
+			{
+				SetMotors(0, 0);
+				ultrasonicRetreating = false;
+				autoStep = nextStep;
+			}
+		}
 	}
 
-	void TeleopPeriodic()
+	void CheckSpring(AutoState nextStep)
 	{
-		leftJoystick->readJoystick();
-		rightJoystick->readJoystick();
-		handheld->readJoystick();
-
-		ManualGearAim(handheld->readButton(1));
-		SwapDrive(rightJoystick->readButton(1), leftJoystick->readButton(1));
-		SmartDashboard::PutBoolean("Drive Swapped?", driveSwapped);
-		DualTankDrive();
-		ManualShiftGears(rightJoystick->readButton(6),rightJoystick->readButton(4));
-
-		PushGear(handheld->readButton(6), handheld->readButton(8));
-		ClimbRope(handheld->readButton(4), handheld->readButton(2));
-		BallShooter(handheld->readButton(5), handheld->readButton(7));
-
-		SmartDashboard::PutNumber("Left Ultrasonic", leftUltrasonic.GetValue());
-		SmartDashboard::PutNumber("Right Ultrasonic", rightUltrasonic.GetValue());
-		SmartDashboard::PutNumber("Difference", leftUltrasonic.GetValue() - rightUltrasonic.GetValue());
+		double distance = springUltrasonic->GetRangeInches();
+		if (distance >= 2.5 && distance <= 10)
+		{
+			AutoPushGear(true);
+			autoStep = nextStep;
+		}
 	}
 
-	void SetMotors(double left, double right){
-		leftDriveA.Set(left);
-		leftDriveB.Set(left);
-		rightDriveA.Set(right);
-		rightDriveB.Set(right);
+	void AutoPushGear(bool push)
+	{
+		if (push)
+		{
+			gearPusher.Set(DoubleSolenoid::kForward);
+		}
+		else
+		{
+			gearPusher.Set(DoubleSolenoid::kReverse);
+		}
 	}
 
-	void ManualGearAim(bool aimButton){
-		ShiftDown();
+	void GearAim(AutoState nextStep)
+	{
 		std::vector<double> xCoords = table->GetNumberArray("centerX", llvm::ArrayRef<double>());
 		SmartDashboard::PutNumberArray("X Coords", xCoords);
 	//	std::vector<double> areas = table->GetNumberArray("area", llvm::ArrayRef<double>());
-		if (xCoords.size() > 1 && aimButton == true){
+		if (xCoords.size() > 1){
+			ShiftDown();
 			SmartDashboard::PutBoolean("Is Autoaiming?", true);
 			double xCoordA = xCoords[0];
 			double xCoordB = xCoords[1];
@@ -369,20 +417,124 @@ public:
 				isLeft = true;
 				isRight = false;
 				isCenter = false;
-				leftDriveA.Set(-0.45);
-				leftDriveB.Set(-0.45);
-				rightDriveA.Set(-0.45);
-				rightDriveB.Set(-0.45);
+				leftDriveA.Set(-0.33);
+				leftDriveB.Set(-0.33);
+				rightDriveA.Set(0.33);
+				rightDriveB.Set(0.33);
 			}
 			else if (averageXCoord > 380){
 				autoAiming = true;
 				isLeft = false;
 				isRight = true;
 				isCenter = false;
-				rightDriveA.Set(0.45);
-				rightDriveB.Set(0.45);
-				leftDriveA.Set(0.45);
-				leftDriveB.Set(0.45);
+				rightDriveA.Set(-0.33);
+				rightDriveB.Set(-0.33);
+				leftDriveA.Set(0.33);
+				leftDriveB.Set(0.33);
+			}
+			else
+			{
+				isLeft = false;
+				isRight = false;
+				isCenter = true;
+				rightDriveA.Set(0.0);
+				rightDriveB.Set(0.0);
+				leftDriveA.Set(0.0);
+				leftDriveB.Set(0.0);
+				autoAiming = false;
+				autoStep = nextStep;
+			}
+			SmartDashboard::PutBoolean("Is Left?", isLeft);
+			SmartDashboard::PutBoolean("Is Right?", isRight);
+			SmartDashboard::PutBoolean("Is Center?", isCenter);
+		}
+		else
+		{
+			autoAiming = false;
+		}
+	}
+
+	void TeleopInit()
+	{
+		leftJoystick->init(&left);
+		rightJoystick->init(&right);
+		handheld->init(&controller);
+
+		driveSwapped = false;
+	}
+
+	void TeleopPeriodic()
+	{
+		leftJoystick->readJoystick();
+		rightJoystick->readJoystick();
+		handheld->readJoystick();
+
+		ManualResetEverything(handheld->readButton(3));
+		ManualGearAim(handheld->readButton(1));
+		SwapDrive(rightJoystick->readButton(1), leftJoystick->readButton(1));
+		SmartDashboard::PutBoolean("Drive Swapped?", driveSwapped);
+		DualTankDrive();
+		ManualShiftGears(rightJoystick->readButton(6),rightJoystick->readButton(4));
+
+		PushGear(handheld->readButton(6), handheld->readButton(8));
+		ClimbRope(handheld->readButton(4), handheld->readButton(2));
+		BallShooter(handheld->readButton(5), handheld->readButton(7));
+
+		ManualAlignment(leftJoystick->readButton(2), leftUltrasonic.GetValue() - rightUltrasonic.GetValue());
+		ManualApproach(leftJoystick->readButton(3), (leftUltrasonic.GetValue() + rightUltrasonic.GetValue()) / 2);
+
+		SmartDashboard::PutNumber("Left Ultrasonic", leftUltrasonic.GetValue());
+		SmartDashboard::PutNumber("Right Ultrasonic", rightUltrasonic.GetValue());
+		SmartDashboard::PutNumber("Difference", leftUltrasonic.GetValue() - rightUltrasonic.GetValue());
+		SmartDashboard::PutNumber("Left Encoder", leftEncoder.Get());
+		SmartDashboard::PutNumber("Right Encoder", rightEncoder.Get());
+		SmartDashboard::PutNumber("Avg Encoder", (leftEncoder.Get() + rightEncoder.Get()) / 2);
+		SmartDashboard::PutNumber("Spring Ultrasonic", springUltrasonic->GetRangeInches());
+
+	}
+
+	void SetMotors(double left, double right){
+		leftDriveA.Set(left);
+		leftDriveB.Set(left);
+		rightDriveA.Set(right);
+		rightDriveB.Set(right);
+	}
+
+	void ManualGearAim(bool aimButton){
+		std::vector<double> xCoords = table->GetNumberArray("centerX", llvm::ArrayRef<double>());
+		SmartDashboard::PutNumberArray("X Coords", xCoords);
+	//	std::vector<double> areas = table->GetNumberArray("area", llvm::ArrayRef<double>());
+		if (xCoords.size() > 1 && aimButton == true){
+			ShiftDown();
+			SmartDashboard::PutBoolean("Is Autoaiming?", true);
+			double xCoordA = xCoords[0];
+			double xCoordB = xCoords[1];
+			SmartDashboard::PutNumber("xCoordA", xCoordA);
+			SmartDashboard::PutNumber("xCoordB", xCoordB);
+			double averageXCoord = (xCoordB + xCoordA)/2;
+			SmartDashboard::PutNumber("Average X Coord", averageXCoord);
+			bool isLeft = false;
+			bool isRight = false;
+			bool isCenter = false;
+			if (averageXCoord < 260){
+				autoAiming = true;
+				isLeft = true;
+				isRight = false;
+				isCenter = false;
+				leftDriveA.Set(-0.33);
+				leftDriveB.Set(-0.33);
+				rightDriveA.Set(0.33);
+				rightDriveB.Set(0.33);
+			}
+			else if (averageXCoord > 380){
+				autoAiming = true;
+				isLeft = false;
+				isRight = true;
+				isCenter = false;
+				rightDriveA.Set(-0.33);
+				rightDriveB.Set(-0.33);
+				leftDriveA.Set(0.33);
+				leftDriveB.Set(0.33);
 			}
 			else
 			{
@@ -508,6 +660,7 @@ public:
 
 	void PushGear(bool pushButton, bool retractButton)
 	{
+		SmartDashboard::PutNumber("Pusher Status", pusherSensor->Get());
 		if (pushButton)
 		{
 			gearPusher.Set(DoubleSolenoid::kForward);
@@ -548,6 +701,57 @@ public:
 		else
 		{
 			ballShooter.Set(0.0);
+		}
+	}
+
+	void ManualResetEverything (bool resetButton)
+	{
+		if (resetButton)
+		{
+			leftEncoder.Reset();
+			rightEncoder.Reset();
+		}
+	}
+
+	void ManualAlignment(bool alignButton, double difference)
+	{
+		if (alignButton)
+		{
+			int turning = 0;
+			ShiftDown();
+			if (difference > 50)
+			{
+				turning = 1;
+				TurnStandalone(false, 0.33); //TURN RIGHT
+			}
+			else if (difference < -50)
+			{
+				turning = 2;
+				TurnStandalone(true, 0.33); //TURN LEFT
+			}
+			else
+			{
+				turning = 0;
+				SetMotors(0, 0);
+				ultrasonicAligning = false;
+			}
+
+			SmartDashboard::PutNumber("L=1 R=2", turning);
+		}
+	}
+
+	void ManualApproach(bool approachButton, double distance){
+		if (approachButton)
+		{
+			ShiftDown();
+			if (distance > minDistance)
+			{
+				SetMotors(0.33, 0.33);
+			}
+			else
+			{
+				SetMotors(0, 0);
+			}
 		}
 	}
 };
