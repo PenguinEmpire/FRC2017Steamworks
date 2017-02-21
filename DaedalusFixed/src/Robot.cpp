@@ -1,5 +1,6 @@
 #include "WPILib.h"
 #include "MyJoystick.h"
+#include "AHRS.h"
 
 #define ANALOG0 0
 #define ANALOG1 1
@@ -66,8 +67,13 @@ public:
 	Ultrasonic* springUltrasonic;
 	DigitalInput* pusherSensor;
 
+	DigitalInput* switchA;
+	DigitalInput* switchB;
+
 	Encoder leftEncoder;
 	Encoder rightEncoder;
+
+	AHRS* ahrs;
 
 	std::shared_ptr<NetworkTable> table;
 	std::vector<double> xCoords;
@@ -83,10 +89,13 @@ public:
 	bool ultrasonicAligning;
 	bool ultrasonicApproaching;
 	bool ultrasonicRetreating;
+	bool turning;
 	double medianDistance;
 	double minDistance;
 	double endDistance;
 	double valueToInches;
+
+	int currentAuto;
 
 	enum Gears {
 		up,
@@ -94,6 +103,9 @@ public:
 	} leftGear, rightGear;
 
 	enum AutoState {
+		init,
+		forward,
+		turn,
 		step0,
 		step1,
 		step2,
@@ -128,6 +140,8 @@ public:
 		leftJoystick = new MyJoystick();
 		handheld = new MyJoystick();
 
+		ahrs = new AHRS(SerialPort::kMXP);
+
 		table = NetworkTable::GetTable("GRIP/myContoursReport");
 		xCoords = table->GetNumberArray("xCoords", llvm::ArrayRef<double>());
 		if (xCoords.size() > 1)
@@ -147,6 +161,7 @@ public:
 		ultrasonicAligning = false;
 		ultrasonicApproaching = false;
 		ultrasonicRetreating = false;
+		turning = false;
 
 		springUltrasonic = new Ultrasonic(DIO9, DIO8);
 		springUltrasonic->SetAutomaticMode(true);
@@ -162,14 +177,17 @@ public:
 
 		ropeLimit = new DigitalInput(DIO0);
 		pusherSensor = new DigitalInput(DIO1);
+		switchA = new DigitalInput(DIO2);
+		switchB = new DigitalInput(DIO3);
 
-		autoStep = step0;
+		autoStep = init;
 
 		leftEncoder.Reset();
 		rightEncoder.Reset();
 		leftEncoder.SetDistancePerPulse(PULSEIN);
 		rightEncoder.SetDistancePerPulse(-PULSEIN);
 
+		currentAuto = 0;
 	}
 
 	~Robot()
@@ -193,10 +211,79 @@ public:
 
 	void AutonomousInit()
 	{
-		autoStep = step0;
+		int switchAVal = switchA->Get();
+		int switchBVal = switchB->Get();
+
+		if (switchAVal == 0 && switchBVal == 0)
+		{
+			currentAuto = 0;
+		}
+		else if (switchAVal == 0 & switchBVal == 1)
+		{
+			currentAuto = 1;
+		}
+		else if (switchAVal == 1 && switchBVal == 0)
+		{
+			currentAuto = 2;
+		}
+		else
+		{
+			currentAuto = 3;
+		}
+
+		if (currentAuto == 1 || currentAuto == 3)
+		{
+			autoStep = step0;
+		}
+		else
+		{
+			autoStep = init;
+		}
 	}
 
 	void AutonomousPeriodic()
+	{
+		if (currentAuto == 0)
+		{
+			LeftAuto();
+		}
+		else if (currentAuto == 1)
+		{
+			CenterAuto();
+		}
+		else if (currentAuto == 2)
+		{
+			RightAuto();
+		}
+		else
+		{
+			BasicAuto();
+		}
+
+	}
+
+	void LeftAuto()
+	{
+		if (autoStep == init)
+		{
+			ResetEverything();
+			autoStep = forward;
+		}
+		else if (autoStep == forward)
+		{
+			MoveForward(0, turn);
+		}
+		else if (autoStep == turn)
+		{
+			TurnGyro(45, 0.33, step0);
+		}
+		else
+		{
+			CenterAuto();
+		}
+	}
+
+	void CenterAuto()
 	{
 		if (autoStep == step0)
 		{
@@ -243,16 +330,66 @@ public:
 		{
 			ResetEverything();
 		}
+	}
 
-//		ultrasonicAligning = true;
-//		AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), done);
+	void RightAuto()
+	{
+		if (autoStep == init)
+			{
+				ResetEverything();
+				autoStep = forward;
+			}
+			else if (autoStep == forward)
+			{
+				MoveForward(0, turn);
+			}
+			else if (autoStep == turn)
+			{
+				TurnGyro(-45, 0.33, step0);
+			}
+			else
+			{
+				CenterAuto();
+			}
+	}
+
+	void BasicAuto()
+	{
+		if (autoStep == step0)
+		{
+			ResetEverything();
+			autoStep = step1;
+		}
+		else if (autoStep == step1)
+		{
+			ultrasonicAligning = true;
+			AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), step2);
+		}
+		else if (autoStep == step2)
+		{
+			ultrasonicApproaching = true;
+			ApproachGear(medianDistance, step3);
+		}
+		else if (autoStep == step3)
+		{
+			GearAim(step4);
+		}
+		else if (autoStep == step4)
+		{
+			ultrasonicApproaching = true;
+			ApproachGear(minDistance, done);
+		}
+		else if (autoStep == done)
+		{
+			ResetEverything();
+		}
 	}
 
 	void ResetEverything()
 	{
 		leftEncoder.Reset();
 		rightEncoder.Reset();
-		//GYRO RESET CODE HERE
+		ahrs->Reset();
 	}
 
 	void MoveForward(double speed, double distance)
@@ -279,31 +416,38 @@ public:
 		}
 	}
 
-	void TurnGyro(bool direction, double angle, double speed)
+	void TurnGyro(double angle, double speed, AutoState nextStep)
 	{
-		if (direction) //TURN RIGHT
+		if (turning)
 		{
-			/* if () //FOR GYRO CODE
-			 * {
-			 * 	SetMotors(speed, speed);
-			 * }
-			 * else
-			 * {
-			 * 	SetMotors(0, 0);
-			 * }
-			 */
+			if (angle < 0) //TURN COUNTERCLOCKWISE
+			{
+				if (ahrs->GetAngle() >= angle)
+				{
+					SetMotors(-speed, speed);
+				}
+				else
+				{
+					SetMotors(0, 0);
+					turning = false;
+				}
+			}
+			else if (angle > 0) //TURN CLOCKWISE
+			{
+				if (ahrs->GetAngle() <= angle)
+				{
+					SetMotors(speed, -speed);
+				}
+				else
+				{
+					SetMotors(0, 0);
+					turning = false;
+				}
+			}
 		}
-		else //TURN LEFT
+		else
 		{
-			/* if () //FOR GYRO CODE
-			 * {
-			 * 	SetMotors(-speed, -speed);
-			 * }
-			 * else
-			 * {
-			 * 	SetMotors(0, 0);
-			 * }
-			 */
+			autoStep = nextStep;
 		}
 	}
 
