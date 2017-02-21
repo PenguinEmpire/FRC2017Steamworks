@@ -89,6 +89,7 @@ public:
 	bool ultrasonicAligning;
 	bool ultrasonicApproaching;
 	bool ultrasonicRetreating;
+	bool approaching;
 	bool turning;
 	double medianDistance;
 	double minDistance;
@@ -96,6 +97,7 @@ public:
 	double valueToInches;
 
 	int currentAuto;
+	std::string autostate;
 
 	enum Gears {
 		up,
@@ -155,12 +157,13 @@ public:
 		pressureStatus = 0;
 
 		medianDistance = 750;
-		minDistance = 300;
+		minDistance = 350;
 		endDistance = 500;
 		valueToInches = 0.125;
 		ultrasonicAligning = false;
 		ultrasonicApproaching = false;
 		ultrasonicRetreating = false;
+		approaching = false;
 		turning = false;
 
 		springUltrasonic = new Ultrasonic(DIO9, DIO8);
@@ -188,6 +191,7 @@ public:
 		rightEncoder.SetDistancePerPulse(-PULSEIN);
 
 		currentAuto = 0;
+		autostate = "";
 	}
 
 	~Robot()
@@ -218,7 +222,7 @@ public:
 		{
 			currentAuto = 0;
 		}
-		else if (switchAVal == 0 & switchBVal == 1)
+		else if (switchAVal == 0 && switchBVal == 1)
 		{
 			currentAuto = 1;
 		}
@@ -231,13 +235,17 @@ public:
 			currentAuto = 3;
 		}
 
-		if (currentAuto == 1 || currentAuto == 3)
+//		currentAuto = 1;
+
+		if (currentAuto == 1)
 		{
 			autoStep = step0;
+			autostate = "step0";
 		}
 		else
 		{
 			autoStep = init;
+			autostate = "init";
 		}
 	}
 
@@ -255,11 +263,11 @@ public:
 		{
 			RightAuto();
 		}
-		else
-		{
-			BasicAuto();
-		}
 
+		SmartDashboard::PutNumber("Current Auto", currentAuto);
+		SmartDashboard::PutNumber("Yaw", ahrs->GetYaw());
+
+		SmartDashboard::PutString("AutoState", autostate);
 	}
 
 	void LeftAuto()
@@ -267,11 +275,15 @@ public:
 		if (autoStep == init)
 		{
 			ResetEverything();
+			ahrs->ZeroYaw();
+			ahrs->Reset();
+			turning = true;
 			autoStep = forward;
 		}
 		else if (autoStep == forward)
 		{
-			MoveForward(0, turn);
+			approaching = true;
+			MoveForward(0.33, 420, turn);
 		}
 		else if (autoStep == turn)
 		{
@@ -287,39 +299,47 @@ public:
 	{
 		if (autoStep == step0)
 		{
+			autostate = "step0";
 			ResetEverything();
 			autoStep = step1;
 		}
 		else if (autoStep == step1)
 		{
+			autostate = "step1";
 			ultrasonicAligning = true;
 			AlignWithGear(leftUltrasonic.GetValue() - rightUltrasonic.GetValue(), step2);
 		}
 		else if (autoStep == step2)
 		{
+			autostate = "step2";
 			ultrasonicApproaching = true;
 			ApproachGear(medianDistance, step3);
 		}
 		else if (autoStep == step3)
 		{
+			autostate = "step3";
 			GearAim(step4);
 		}
 		else if (autoStep == step4)
 		{
+			autostate = "step4";
 			ultrasonicApproaching = true;
 			ApproachGear(minDistance, step5);
 		}
 		else if (autoStep == step5)
 		{
+			autostate = "step5";
 			CheckSpring(step6);
 		}
 		else if (autoStep == step6)
 		{
+			autostate = "step6";
 			ultrasonicRetreating = true;
 			Retreat(endDistance, step7);
 		}
 		else if (autoStep == step7)
 		{
+			autostate = "step7";
 			if (pusherSensor->Get() == 0)
 			{
 				AutoPushGear(false); //RETRACT GEAR PUSHER
@@ -328,6 +348,7 @@ public:
 		}
 		else if (autoStep == done)
 		{
+			autostate = "done";
 			ResetEverything();
 		}
 	}
@@ -336,19 +357,28 @@ public:
 	{
 		if (autoStep == init)
 			{
+				ShiftDown();
 				ResetEverything();
+				ahrs->ZeroYaw();
+				ahrs->Reset();
+				turning = true;
 				autoStep = forward;
 			}
 			else if (autoStep == forward)
 			{
-				MoveForward(0, turn);
+				autostate = "forward";
+				approaching = true;
+				MoveForward(0.5, 380, turn);
+
 			}
 			else if (autoStep == turn)
 			{
-				TurnGyro(-45, 0.33, step0);
+				autostate = "turn";
+				TurnGyro(-52.5, 0.5, step0);
 			}
 			else
 			{
+				autostate = "Moving on to center code.";
 				CenterAuto();
 			}
 	}
@@ -389,18 +419,23 @@ public:
 	{
 		leftEncoder.Reset();
 		rightEncoder.Reset();
-		ahrs->Reset();
+		ahrs->ZeroYaw();
 	}
 
-	void MoveForward(double speed, double distance)
+	void MoveForward(double speed, double distance, AutoState nextStep)
 	{
-		if (leftEncoder.Get() < distance)
+		if (approaching)
 		{
-			SetMotors(speed, speed);
-		}
-		else
-		{
-			SetMotors(0, 0);
+			if (leftEncoder.Get() < distance)
+			{
+				SetMotors(speed, speed);
+			}
+			else
+			{
+				approaching = false;
+				SetMotors(0, 0);
+				autoStep = nextStep;
+			}
 		}
 	}
 
@@ -422,7 +457,7 @@ public:
 		{
 			if (angle < 0) //TURN COUNTERCLOCKWISE
 			{
-				if (ahrs->GetAngle() >= angle)
+				if (ahrs->GetYaw() >= angle)
 				{
 					SetMotors(-speed, speed);
 				}
@@ -434,7 +469,7 @@ public:
 			}
 			else if (angle > 0) //TURN CLOCKWISE
 			{
-				if (ahrs->GetAngle() <= angle)
+				if (ahrs->GetYaw() <= angle)
 				{
 					SetMotors(speed, -speed);
 				}
@@ -487,7 +522,7 @@ public:
 			ShiftDown();
 			if ( averageUltrasonic > distance)
 			{
-				SetMotors(0.33, 0.33);
+				SetMotors(0.4, 0.4);
 			}
 			else
 			{
@@ -634,6 +669,8 @@ public:
 		SmartDashboard::PutNumber("Right Encoder", rightEncoder.Get());
 		SmartDashboard::PutNumber("Avg Encoder", (leftEncoder.Get() + rightEncoder.Get()) / 2);
 		SmartDashboard::PutNumber("Spring Ultrasonic", springUltrasonic->GetRangeInches());
+		SmartDashboard::PutNumber("SwitchA", switchA->Get());
+		SmartDashboard::PutNumber("SwitchB", switchB->Get());
 
 	}
 
