@@ -91,9 +91,11 @@ public:
 	bool ultrasonicRetreating;
 	bool approaching;
 	bool turning;
+	bool boiler;
 	double medianDistance;
 	double minDistance;
 	double endDistance;
+	double distanceToTurn;
 	double valueToInches;
 
 	int currentAuto;
@@ -160,11 +162,13 @@ public:
 		minDistance = 350;
 		endDistance = 500;
 		valueToInches = 0.125;
+		distanceToTurn = 420;
 		ultrasonicAligning = false;
 		ultrasonicApproaching = false;
 		ultrasonicRetreating = false;
 		approaching = false;
 		turning = false;
+		boiler = false;
 
 		springUltrasonic = new Ultrasonic(DIO9, DIO8);
 		springUltrasonic->SetAutomaticMode(true);
@@ -206,7 +210,7 @@ public:
 	void RobotInit()
 	{
 		CameraServer::GetInstance()->StartAutomaticCapture("cam0", 0);
-//		CameraServer::GetInstance()->StartAutomaticCapture("cam1", 1);
+		CameraServer::GetInstance()->StartAutomaticCapture("cam1", 1);
 		enabled = compressor.Enabled();
 		pressureStatus = compressor.GetPressureSwitchValue();
 		current = compressor.GetCompressorCurrent();
@@ -217,6 +221,17 @@ public:
 	{
 		int switchAVal = switchA->Get();
 		int switchBVal = switchB->Get();
+
+//		if (switchCVal == 0)
+//		{
+			boiler = true;
+			distanceToTurn = 400;
+//		}
+//		else
+//		{
+//			boiler = false;
+//			distanceToTurn = 420;
+//		}
 
 		if (switchAVal == 0 && switchBVal == 0)
 		{
@@ -268,12 +283,15 @@ public:
 		SmartDashboard::PutNumber("Yaw", ahrs->GetYaw());
 
 		SmartDashboard::PutString("AutoState", autostate);
+		SmartDashboard::PutNumber("Distance Until Turn", distanceToTurn);
+
 	}
 
 	void LeftAuto()
 	{
 		if (autoStep == init)
 		{
+			ShiftDown();
 			ResetEverything();
 			ahrs->ZeroYaw();
 			ahrs->Reset();
@@ -282,15 +300,19 @@ public:
 		}
 		else if (autoStep == forward)
 		{
+			autostate = "forward";
 			approaching = true;
-			MoveForward(0.33, 420, turn);
+			MoveForward(0.5, distanceToTurn, turn);
+
 		}
 		else if (autoStep == turn)
 		{
-			TurnGyro(45, 0.33, step0);
+			autostate = "turn";
+			TurnGyro(45, 0.5, step0);
 		}
 		else
 		{
+			autostate = "Moving on to center code.";
 			CenterAuto();
 		}
 	}
@@ -368,7 +390,7 @@ public:
 			{
 				autostate = "forward";
 				approaching = true;
-				MoveForward(0.5, 380, turn);
+				MoveForward(0.5, distanceToTurn, turn);
 
 			}
 			else if (autoStep == turn)
@@ -555,7 +577,7 @@ public:
 	void CheckSpring(AutoState nextStep)
 	{
 		double distance = springUltrasonic->GetRangeInches();
-		if (distance >= 2.5 && distance <= 10)
+		if (distance >= 2.5 && distance <= 17)
 		{
 			AutoPushGear(true);
 			autoStep = nextStep;
@@ -655,7 +677,8 @@ public:
 		DualTankDrive();
 		ManualShiftGears(rightJoystick->readButton(6),rightJoystick->readButton(4));
 
-		PushGear(handheld->readButton(6), handheld->readButton(8));
+		TeleopCheckSpring();
+		PushGear(handheld->readButton(6));
 		ClimbRope(handheld->readButton(4), handheld->readButton(2));
 		BallShooter(handheld->readButton(5), handheld->readButton(7));
 
@@ -671,6 +694,7 @@ public:
 		SmartDashboard::PutNumber("Spring Ultrasonic", springUltrasonic->GetRangeInches());
 		SmartDashboard::PutNumber("SwitchA", switchA->Get());
 		SmartDashboard::PutNumber("SwitchB", switchB->Get());
+		SmartDashboard::PutNumber("Distance Until Turn", distanceToTurn);
 
 	}
 
@@ -839,7 +863,7 @@ public:
 	}
 
 
-	void PushGear(bool pushButton, bool retractButton)
+	void PushGear(bool pushButton)
 	{
 		SmartDashboard::PutNumber("Pusher Status", pusherSensor->Get());
 		if (pushButton)
@@ -847,7 +871,7 @@ public:
 			gearPusher.Set(DoubleSolenoid::kForward);
 		}
 
-		if (retractButton)
+		if (pusherSensor->Get() == 0)
 		{
 			gearPusher.Set(DoubleSolenoid::kReverse);
 		}
@@ -934,6 +958,21 @@ public:
 				SetMotors(0, 0);
 			}
 		}
+	}
+
+	void TeleopCheckSpring()
+	{
+		double distance = springUltrasonic->GetRangeInches();
+		bool springInside = false;
+		if (distance >= 2.5 && distance <= 10)
+		{
+			springInside = true;
+		}
+		else
+		{
+			springInside = false;
+		}
+		SmartDashboard::PutBoolean("Spring Inside", springInside);
 	}
 };
 
