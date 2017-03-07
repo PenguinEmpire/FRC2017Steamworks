@@ -101,6 +101,9 @@ public:
 	int currentAuto;
 	std::string autostate;
 
+	bool singleOperatorMode;
+	bool controllerMode;
+
 	enum Gears {
 		up,
 		down
@@ -140,6 +143,8 @@ public:
 		leftEncoder(DIO5, DIO4),
 		rightEncoder(DIO7, DIO6)
 	{
+		singleOperatorMode = false;
+		controllerMode = false;
 		rightJoystick = new MyJoystick();
 		leftJoystick = new MyJoystick();
 		handheld = new MyJoystick();
@@ -670,17 +675,23 @@ public:
 		rightJoystick->readJoystick();
 		handheld->readJoystick();
 
-		ManualResetEverything(handheld->readButton(3));
-		ManualGearAim(handheld->readButton(1));
-		SwapDrive(rightJoystick->readButton(1), leftJoystick->readButton(1));
+		SmartDashboard::PutNumber("ZZZ_HANDHELD POV", handheld->getPOV());
+
+		ToggleSingleOperator(rightJoystick->readButton(7), rightJoystick->readButton(8));
+		ToggleController(handheld->readButton(9), handheld->readButton(10));
+
+		ManualResetEverything(handheld->readButton(3), leftJoystick->readButton(5));
+		ManualGearAim(handheld->readButton(1), leftJoystick->readButton(3));
+		SwapDrive(rightJoystick->readButton(5), rightJoystick->readButton(3), handheld->getPOV());
 		SmartDashboard::PutBoolean("Drive Swapped?", driveSwapped);
 		DualTankDrive();
-		ManualShiftGears(rightJoystick->readButton(6),rightJoystick->readButton(4));
+		ManualShiftGears(rightJoystick->readButton(6),rightJoystick->readButton(4), handheld->getPOV());
 
 		TeleopCheckSpring();
-		PushGear(handheld->readButton(6));
-		ClimbRope(handheld->readButton(4), handheld->readButton(2));
-		BallShooter(handheld->readButton(5), handheld->readButton(7));
+		PushGear(handheld->readButton(6), rightJoystick->readButton(1));
+		RetractGear(handheld->readButton(8), leftJoystick->readButton(1));
+		ClimbRope(handheld->readButton(4), handheld->readButton(2), leftJoystick->readButton(6), leftJoystick->readButton(4));
+		BallShooter(handheld->readButton(5), handheld->readButton(7), rightJoystick->readButton(12), rightJoystick->readButton(11));
 
 		ManualAlignment(leftJoystick->readButton(2), leftUltrasonic.GetValue() - rightUltrasonic.GetValue());
 		ManualApproach(leftJoystick->readButton(3), (leftUltrasonic.GetValue() + rightUltrasonic.GetValue()) / 2);
@@ -705,11 +716,23 @@ public:
 		rightDriveB.Set(right);
 	}
 
-	void ManualGearAim(bool aimButton){
+	void ManualGearAim(bool aimButton, bool single){
 		std::vector<double> xCoords = table->GetNumberArray("centerX", llvm::ArrayRef<double>());
 		SmartDashboard::PutNumberArray("X Coords", xCoords);
 	//	std::vector<double> areas = table->GetNumberArray("area", llvm::ArrayRef<double>());
-		if (xCoords.size() > 1 && aimButton == true){
+
+		bool button;
+
+		if (singleOperatorMode)
+		{
+			button = single;
+		}
+		else
+		{
+			button = aimButton;
+		}
+
+		if (xCoords.size() > 1 && button == true){
 			ShiftDown();
 			SmartDashboard::PutBoolean("Is Autoaiming?", true);
 			double xCoordA = xCoords[0];
@@ -762,30 +785,64 @@ public:
 		}
 	}
 
-	void SwapDrive(bool right, bool left) {
-		if (right)
+	void SwapDrive(bool forward, bool reverse, double controllerPOV) {
+		if (controllerMode)
 		{
-			if (driveSwapped)
+			if (controllerPOV == 90)
 			{
-				driveSwapped = false;
+				if (driveSwapped)
+				{
+					driveSwapped = false;
+				}
+			}
+
+			if (controllerPOV == 270)
+			{
+				if (!driveSwapped)
+				{
+					driveSwapped = true;
+				}
 			}
 		}
-		if (left)
+		else
 		{
-			if (!driveSwapped)
+			if (forward)
 			{
-				driveSwapped = true;
+				if (driveSwapped)
+				{
+					driveSwapped = false;
+				}
+			}
+			if (reverse)
+			{
+				if (!driveSwapped)
+				{
+					driveSwapped = true;
+				}
 			}
 		}
 	}
 
 	void DualTankDrive()
 	{
+		double leftInput;
+		double rightInput;
+
+		if (controllerMode)
+		{
+			leftInput = -handheld->checkRightStickY();
+			rightInput = handheld->checkLeftStickY();
+		}
+		else
+		{
+			leftInput = left.GetRawAxis(1);
+			rightInput = right.GetRawAxis(1);
+		}
 		if (!driveSwapped)
 		{
-			if(fabs(left.GetRawAxis(1)) > 0.3) {
-				leftDriveA.Set(left.GetRawAxis(1) * -0.65);
-				leftDriveB.Set(left.GetRawAxis(1) * -0.65);
+			if(fabs(leftInput) > 0.3) {
+				leftDriveA.Set(leftInput * -0.65);
+				leftDriveB.Set(leftInput * -0.65);
 			}
 			else if(!autoAiming)
 			{
@@ -793,9 +850,9 @@ public:
 				leftDriveB.Set(0);
 			}
 
-			if(fabs(right.GetRawAxis(1)) > 0.3) {
-				rightDriveA.Set(right.GetRawAxis(1) * -0.65);
-				rightDriveB.Set(right.GetRawAxis(1) * -0.65);
+			if(fabs(rightInput) > 0.3) {
+				rightDriveA.Set(rightInput * -0.65);
+				rightDriveB.Set(rightInput * -0.65);
 			}
 			else if(!autoAiming)
 			{
@@ -805,9 +862,9 @@ public:
 		}
 		else if (driveSwapped)
 		{
-			if(fabs(left.GetRawAxis(1)) > 0.3) {
-				rightDriveA.Set(left.GetRawAxis(1) * 0.65);
-				rightDriveB.Set(left.GetRawAxis(1) * 0.65);
+			if(fabs(leftInput) > 0.3) {
+				rightDriveA.Set(leftInput * 0.65);
+				rightDriveB.Set(leftInput * 0.65);
 			}
 			else if(!autoAiming)
 			{
@@ -816,9 +873,9 @@ public:
 				rightDriveB.Set(0);
 			}
 
-			if(fabs(right.GetRawAxis(1)) > 0.3) {
-				leftDriveA.Set(right.GetRawAxis(1) * 0.65);
-				leftDriveB.Set(right.GetRawAxis(1) * 0.65);
+			if(fabs(rightInput) > 0.3) {
+				leftDriveA.Set(rightInput * 0.65);
+				leftDriveB.Set(rightInput * 0.65);
 			}
 			else if(!autoAiming)
 			{
@@ -849,24 +906,50 @@ public:
 			rightGear = up;
 		}
 	}
-	void ManualShiftGears(bool upButton, bool downButton)
+	void ManualShiftGears(bool upButton, bool downButton, double handheldPOV)
 	{
-		if(upButton)
+		if (controllerMode)
 		{
-			ShiftUp();
-		}
+			if (handheldPOV == 0)
+			{
+				ShiftUp();
+			}
 
-		if(downButton)
+			if (handheldPOV == 180)
+			{
+				ShiftDown();
+			}
+		}
+		else
 		{
-			ShiftDown();
+			if(upButton)
+			{
+				ShiftUp();
+			}
+
+			if(downButton)
+			{
+				ShiftDown();
+			}
 		}
 	}
 
 
-	void PushGear(bool pushButton)
+	void PushGear(bool pushButton, bool single)
 	{
+//		bool button;
+//
+//		if (singleOperatorMode)
+//		{
+//			button = single;
+//		}
+//		else
+//		{
+//			button = pushButton;
+//		}
+
 		SmartDashboard::PutNumber("Pusher Status", pusherSensor->Get());
-		if (pushButton)
+		if (pushButton || single)
 		{
 			gearPusher.Set(DoubleSolenoid::kForward);
 		}
@@ -877,13 +960,47 @@ public:
 		}
 	}
 
-	void ClimbRope (bool climbButton, bool descendButton)
+	void RetractGear(bool retractButton, bool single)
 	{
-		if (climbButton && !descendButton && ropeLimit->Get())
+//		bool button;
+//
+//		if (singleOperatorMode)
+//		{
+//			button = single;
+//		}
+//		else
+//		{
+//			button = retractButton;
+//		}
+
+		SmartDashboard::PutNumber("PusherStatus", pusherSensor->Get());
+		if (retractButton || single)
+		{
+			gearPusher.Set(DoubleSolenoid::kReverse);
+		}
+	}
+
+	void ClimbRope (bool climbButton, bool descendButton, bool singleClimb, bool singleDescend)
+	{
+		bool climb;
+		bool descend;
+
+		if (singleOperatorMode)
+		{
+			climb = singleClimb;
+			descend = singleDescend;
+		}
+		else
+		{
+			climb = climbButton;
+			descend = descendButton;
+		}
+
+		if (climb && !descend && ropeLimit->Get())
 		{
 			ropeClimber.Set(1.0);
 		}
-		else if (!climbButton && descendButton)
+		else if (!climb && descend)
 		{
 			ropeClimber.Set(-1.0);
 		}
@@ -893,13 +1010,26 @@ public:
 		}
 	}
 
-	void BallShooter (bool fireButton, bool collectButton)
+	void BallShooter (bool fireButton, bool collectButton, bool singleFire, bool singleCollect)
 	{
-		if (fireButton && !collectButton)
+		bool fire;
+		bool collect;
+		if (singleOperatorMode)
+		{
+			fire = singleFire;
+			collect = singleCollect;
+		}
+		else
+		{
+			fire = fireButton;
+			collect = collectButton;
+		}
+
+		if (fire && !collect)
 		{
 			ballShooter.Set(1.0);
 		}
-		else if (!fireButton && collectButton)
+		else if (!fire && collect)
 		{
 			ballShooter.Set(-1.0);
 		}
@@ -909,9 +1039,21 @@ public:
 		}
 	}
 
-	void ManualResetEverything (bool resetButton)
+	void ManualResetEverything (bool resetButton, bool single)
 	{
-		if (resetButton)
+
+		bool reset;
+
+		if(singleOperatorMode)
+		{
+			reset = single;
+		}
+		else
+		{
+			reset = resetButton;
+		}
+
+		if (reset)
 		{
 			leftEncoder.Reset();
 			rightEncoder.Reset();
@@ -973,6 +1115,32 @@ public:
 			springInside = false;
 		}
 		SmartDashboard::PutBoolean("Spring Inside", springInside);
+	}
+
+	void ToggleSingleOperator(bool enable, bool disable)
+	{
+		if (enable)
+		{
+			singleOperatorMode = true;
+		}
+
+		if (disable)
+		{
+			singleOperatorMode = false;
+		}
+	}
+
+	void ToggleController(bool enable, bool disable)
+	{
+		if (enable)
+		{
+			controllerMode = true;
+		}
+
+		if (disable)
+		{
+			controllerMode = false;
+		}
 	}
 };
 
